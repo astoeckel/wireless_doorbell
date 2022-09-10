@@ -1,0 +1,38 @@
+[binaries]
+c = '/usr/bin/avr-gcc'
+cpp = '/usr/bin/avr-g++'
+ar = '/usr/bin/avr-ar'
+strip = '/usr/bin/avr-strip'
+
+[properties]
+root = '/usr/share/arduino'
+
+
+[built-in options]
+
+c_args = [
+  '-Os',
+  '-I/usr/avr/include',
+  '-ffunction-sections',
+  '-fdata-sections',
+  '-mmcu=atmega168p',
+  ]
+
+cpp_args = [
+  '-Os',
+  '-I/usr/avr/include',
+  '-fno-exceptions',
+  '-fno-rtti',
+  '-ffunction-sections',
+  '-fdata-sections',
+  '-mmcu=atmega168',
+  ]
+
+c_link_args = ['-Wl,--gc-sections', '-mmcu=atmega168p']
+cpp_link_args = ['-Wl,--gc-sections', '-mmcu=atmega168p']
+
+[host_machine]
+system = 'bare'
+cpu_family = 'avr'
+cpu = 'atmega168'
+endian = 'none'
