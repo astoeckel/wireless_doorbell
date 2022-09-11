@@ -1,23 +1,29 @@
 # Wireless Doorbell
-**Wireless doorbell transmitter (and Raspberry Pi AVR prototyping HAT)**
+**A hopelessly overengineered wireless doorbell transmitter (and Raspberry Pi AVR prototyping HAT)**
 
 ![Screenshot of the PCB in KiCAD](doc/pcb.png)
 
 > **Warning**  
-> This project is provided as-is and likely not of use to anyone else; at least not without modifications.  
-> **The author of this repository takes no responsibility for any damage resulting from the electronic devices described here.**
+> This project is provided as-is and likely not of use to anyone else; at least not without modifications. Note that:
+> 1. The PCB (especially the AC supply) was designed for parts the author had lying around. Many of these parts may be obsolete.
+> 2. This project solves a very niche problem.
+> 3. The firmware uses plain-text wireless transmission without encryption or signatures. This is fine for the author's use case, where all an adversary can accomplish is to wirelessly ring the doorbell. A sneaky hacker could of course just press the doorbell button on the street to the same effect.
+>
+> **The author of this repository takes no responsibility for any damage resulting from using the electronic devices described here.**
 > **You are responsible for making sure that operating these devices meets all relevant regulatory requirements in your region.**
 
-This repository contains the PCB and Firmware for a Si4463-based (HopeRF RFM26W) wireless doorbell operating in the 433 MHz ISM band.
-Doorbell button presses are transmitted wirelessly from one PCB to the same PCB serving as a RaspberryPi hat.
-Here the button press events are forwarded to [OpenHAB](https://www.openhab.org/) (via SerialBridge),
-where they trigger all SIP phones in the house to ring via [FemtoSIP](https://github.com/astoeckel/femtosip).
+This repository contains the PCB and Firmware for a Si4463-based (on a HopeRF RFM26W module) wireless doorbell operating on the 433 MHz ISM band.
+The Si4463 is controlled using an ATmega168 µC (the project requires about 6kiB of flash memory).
 
-The left side of the PCB is a Raspberry Pi compatible AVR Microcontroller hat with Arduino-compatible pin headers and space
-for the HopeRF RFM26W module (for the ATmega168/ATMega328 family).
-The right side of the PCB is an low-voltage AC power supply with 50 Hz pulse extraction; the 
-The right side of the PCB is designed to be sawed off if not in use.
-Since PCB prototyping services often produce at least 5-10 PCBs, the PCB was designed with some versatility in mind,
+Doorbell button presses are transmitted wirelessly between two of these PCBs.
+One of the PCBs serves as a Raspberry Pi HAT, where button press events are forwarded via UART to [OpenHAB](https://www.openhab.org/) (using [Serial Bridge and Serial Device](https://www.openhab.org/addons/bindings/serial/)).
+In turn, OpenHAB has a rule that causes all SIP phones in the house to ring via [FemtoSIP](https://github.com/astoeckel/femtosip).
+
+The left side of the PCB is a Raspberry Pi compatible AVR Microcontroller HAT (for the ATmega168/ATMega328 family) with Arduino-compatible pin headers and space for the HopeRF RFM26W module (note that this module seems to be obsolete).
+The right side of the PCB is an low-voltage AC power supply with 50 Hz pulse extraction and is designed to be sawed off if not in use.
+
+Since PCB prototyping services often produce at least 5-10 PCBs, the PCB was designed with some versatility in mind.
+Correspondingly, it has far more pin headers as necessary.
 
 ## Overview
 
@@ -32,14 +38,15 @@ Correspondingly, the 50 Hz oscillations disappear on the yellow wire; this is re
 $DBG,<BUTTON PRESSED>,<SEQ>
 ```
 to the receiver at a baud rate of 10kbps.
-Each packet is repeated five times.
+`<BUTTON PRESSED>` is set to `1` if the 50 Hz signal goes away; it is set to `0` once the signal reappears.
+Every packet is repeated five times; with each repetition `<SEQ>` is incremented by one (starting from `0`).
 
 ## Schematics and Gerber files
 
 * **Gerber files**  
   The Gerber files used for production can be found in the `gerber` folder (the author is not aware of any bugs on the PCB).
 * **Schematic and KiCAD sources**  
-  The KiCAD source files are in the `kicad` folder. A printout of the schematics in [PDF form](doc/schematics.pdf) may be found in the `doc` folder.
+  The KiCAD source files are in the `kicad` folder. A printout of the schematics in [PDF form](doc/schematics.pdf) can be found in the `doc` folder.
 
 ## Firmware
 
@@ -57,7 +64,11 @@ ninja flash  # Requires avrdude with linuxspi when flashing directly from the RP
 ## Manual
 
 The firmware automatically decides whether it acts as the receiver or transmitter depending on the presence of the 50 Hz pulse from the yellow wire in the above diagram.
-Once a stable series of 50 Hz pulse are received, the device is in `transmitter` mode.
+Once a stable series of 50 Hz pulse are received, the device is in “transmitter” mode.
+
+### Antenna
+Note that the antenna on the board is designed for 868 MHz and does not have a large gain (close the solder bridge `J` on the board to activate the internal antenna).
+In the final device, I'm using [this antenna](https://www.instructables.com/433-MHz-Coil-loaded-antenna/) ([PDF instructions by Ben Schueler](https://drive.google.com/file/d/1E9KPAPJrZRgGLOQqwd2-3-Px0MuSVreY/view)) soldered directly to the RFM26W module (the antenna is not connected to the PCB).
 
 ### Receiver
 
@@ -71,7 +82,7 @@ Once a stable series of 50 Hz pulse are received, the device is in `transmitter`
 1. Connect the three doorbell wires as indicated in the diagram above.
 2. The `RX` led will blink once every second if the 50 Hz pulse has been recognized; the board will go to a 3-4mA power-save mode (this is to prevent the linear voltage regulator from becoming too hot).
 3. If the 50 Hz signal goes away, the transmitter will send a message to the receiver as described above. The `TX` LED should blink rapidly.
-4. Shortly pressing the SMD button will send a `PING` request. Furthermore, the transmitter will leave power-save mode for one minute; it can now be pinged by the receiver.
+4. Shortly pressing the SMD button will send a `PING` request and rapidly blink both LEDs if it receives a response. Furthermore, the transmitter will leave power-save mode for one minute; it can now respond with `PONG` to `PING` messages issued by the receiver.
 5. Pressing the SMD button for 3 seconds will reset the µC on the board.
 
 ## License
