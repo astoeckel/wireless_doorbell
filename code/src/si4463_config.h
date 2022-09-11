@@ -1,4 +1,4 @@
-/*! @file radio_config.h
+/*! @file si4463_config.h
  * @brief This file contains the automatically generated
  * configurations.
  *
