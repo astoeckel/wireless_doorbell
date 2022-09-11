@@ -115,9 +115,9 @@ const uint8_t radio_config[] PROGMEM = RADIO_CONFIGURATION_DATA_ARRAY;
 void reset()
 {
 	Platform::radio_reset(true);
-	Platform::delay_ms(20);
+	Platform::delay_us(100);
 	Platform::radio_reset(false);
-	Platform::delay_ms(100);
+	Platform::delay_ms(10);
 }
 
 void init()

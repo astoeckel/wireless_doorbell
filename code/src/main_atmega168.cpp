@@ -30,7 +30,7 @@ static inline void disable()
 
 static inline void reset() { wdt_reset(); }
 
-static inline void enable() { wdt_enable(WDTO_2S); }
+static inline void enable() { wdt_enable(WDTO_120MS); }
 
 }  // namespace Watchdog
 
@@ -68,7 +68,7 @@ static inline void init()
 
 static inline void go_slow()
 {
-	// Generate an interrupt approximately every 1ms
+	// Generate an interrupt approximately every 2ms
 	_increment = 10;
 	TCNT1 = 0;
 	OCR1A = (F_CPU / 1000);  // compare value
@@ -188,9 +188,9 @@ void enter()
  */
 struct DoorbellButton {
 	enum State {
-		UNKNOWN,
-		PRESSED,
-		DEPRESSED,
+		Unknown,
+		Pressed,
+		Depressed,
 	};
 
 	static constexpr uint16_t MIN_DELTA = 156;      // 1 / 60 Hz - 1ms
@@ -220,7 +220,7 @@ struct DoorbellButton {
 			// Is the pulse pin still high? If not, we might just be running
 			// out of power.
 			if (pin_state) {
-				return PRESSED;
+				return Pressed;
 			}
 		}
 		else if (pulse_event) {
@@ -239,14 +239,103 @@ struct DoorbellButton {
 				ac_carrier_pulse_count = 0;
 			}
 		}
-		return (ac_carrier_pulse_count >= AC_CARRIER_SYNC) ? DEPRESSED
-		                                                   : UNKNOWN;
+		return (ac_carrier_pulse_count >= AC_CARRIER_SYNC) ? Depressed
+		                                                   : Unknown;
 	}
 
-	bool can_sleep()
+	bool can_sleep() { return ac_carrier_pulse_count == AC_CARRIER_SYNC; }
+};
+
+struct DebouncedIO {
+	/**
+	 * Time for which the I/O pin needs to be stable.
+	 */
+	static constexpr uint16_t DEBOUNCE_TICKS = 500;  // 50ms
+
+	bool cur_state = false;
+	bool last_raw_in = false;
+	uint16_t last_edge_ticks = 0;
+
+	bool update(uint16_t cur_ticks, bool raw_in)
 	{
-		return ac_carrier_pulse_count == AC_CARRIER_SYNC;
+		if (raw_in != last_raw_in) {
+			last_raw_in = raw_in;
+			last_edge_ticks = cur_ticks;
+		}
+		if (cur_ticks - last_edge_ticks >= DEBOUNCE_TICKS) {
+			last_edge_ticks = cur_ticks - DEBOUNCE_TICKS;
+			cur_state = raw_in;
+		}
+		return cur_state;
 	}
+
+	bool can_sleep(uint16_t cur_ticks)
+	{
+		return (cur_ticks - last_edge_ticks) >= DEBOUNCE_TICKS;
+	}
+};
+
+struct OnboardButton {
+	/**
+	 * Number of seconds the button has to be pushed down for the board to
+	 * reset.
+	 */
+	static constexpr uint8_t RESET_DUR_SEC = 5;  // 5s
+
+	/**
+	 * Number of seconds for which pressing the button forces non-power-save
+	 * mode.
+	 */
+	static constexpr uint8_t NO_SLEEP_DUR_SEC = 5;  // 5s
+
+	enum Action {
+		DoNothing,
+		SendPing,
+		Reset,
+	};
+
+	uint16_t last_button_press_sec_ticks = 0;
+	uint8_t no_sleep_secs = 0;
+	uint8_t reset_secs = 0;
+	bool last_is_pressed = false;
+
+	Action update(uint16_t cur_ticks, bool pin_state)
+	{
+		// Fetch the actual button state (high = depressed, low = pressed)
+		const bool is_pressed = !pin_state;
+
+		if (is_pressed != last_is_pressed) {
+			last_is_pressed = is_pressed;
+			last_button_press_sec_ticks = cur_ticks;
+			if (is_pressed) {
+				no_sleep_secs = NO_SLEEP_DUR_SEC;
+				reset_secs = RESET_DUR_SEC;
+				return Action::SendPing;
+			}
+			else {
+				reset_secs = 0;
+			}
+		}
+
+		// Count the number of seconds since the last button press
+		uint16_t delta_sec = cur_ticks - last_button_press_sec_ticks;
+		if (delta_sec > 10000) {
+			last_button_press_sec_ticks += 10000;
+			if (no_sleep_secs > 0) {
+				no_sleep_secs--;
+			}
+			if (last_is_pressed && reset_secs > 0) {
+				reset_secs--;
+				if (reset_secs == 0) {
+					return Action::Reset;
+				}
+			}
+		}
+
+		return Action::DoNothing;
+	}
+
+	bool can_sleep() { return !last_is_pressed && (no_sleep_secs == 0); }
 };
 
 struct DoorbellButtonTxStateMachine {
@@ -255,7 +344,7 @@ struct DoorbellButtonTxStateMachine {
 	static constexpr uint16_t REPEAT = 5;
 	static constexpr uint16_t IVAL_MS = 500;  // 50 ms
 
-	DoorbellButton::State last_doorbell_state = DoorbellButton::UNKNOWN;
+	DoorbellButton::State last_doorbell_state = DoorbellButton::Unknown;
 	uint8_t tx_doorbell_seq_idx = 0;
 	bool tx_doorbell_forced = false;
 	bool had_good_state_once = false;
@@ -270,8 +359,8 @@ struct DoorbellButtonTxStateMachine {
 		// Second counter; force an update every FORCE_IVAL_SEC seconds.
 		if ((cur_ticks - last_seconds_ticks > 10000) && had_good_state_once) {
 			last_tx_seconds++;
-			last_seconds_ticks = cur_ticks;
-			if (((button_state == DoorbellButton::UNKNOWN) &&
+			last_seconds_ticks += 10000;
+			if (((button_state == DoorbellButton::Unknown) &&
 			     (last_tx_seconds > FORCE_IVAL_SEC_UNKNOWN)) ||
 			    (last_tx_seconds > FORCE_IVAL_SEC)) {
 				tx_doorbell_seq_idx = REPEAT;
@@ -282,18 +371,18 @@ struct DoorbellButtonTxStateMachine {
 
 		// If there was a transition in button state, print a message and
 		// update the output
-		if ((button_state != DoorbellButton::UNKNOWN) &&
+		if ((button_state != DoorbellButton::Unknown) &&
 		    (button_state != last_doorbell_state)) {
 			had_good_state_once = true;
 			last_doorbell_state = button_state;
 			switch (button_state) {
-				case DoorbellButton::PRESSED:
+				case DoorbellButton::Pressed:
 					UART::print_json_msg("info", "doorbell button pressed");
 					tx_doorbell_seq_idx = 2 * REPEAT;
 					tx_doorbell_event_ticks = cur_ticks - IVAL_MS;
 					tx_doorbell_forced = false;
 					break;
-				case DoorbellButton::DEPRESSED:
+				case DoorbellButton::Depressed:
 					UART::print_json_msg("info", "doorbell button depressed");
 					if (tx_doorbell_seq_idx < REPEAT) {
 						tx_doorbell_seq_idx = REPEAT;
@@ -311,7 +400,7 @@ struct DoorbellButtonTxStateMachine {
 			tx_doorbell_event_ticks = cur_ticks;
 
 			bool is_on = (tx_doorbell_seq_idx > REPEAT);
-			bool is_off = (last_doorbell_state == DoorbellButton::DEPRESSED) ||
+			bool is_off = (last_doorbell_state == DoorbellButton::Depressed) ||
 			              (tx_doorbell_forced);
 			if (is_on || is_off) {
 				uint8_t seq = (is_on ? 2 : 1) * REPEAT - tx_doorbell_seq_idx;
@@ -321,7 +410,7 @@ struct DoorbellButtonTxStateMachine {
 				}
 				else {
 					if (tx_doorbell_forced &&
-					    (button_state == DoorbellButton::UNKNOWN)) {
+					    (button_state == DoorbellButton::Unknown)) {
 						radio_tx_buf.push('?');
 					}
 					else {
@@ -337,12 +426,14 @@ struct DoorbellButtonTxStateMachine {
 		}
 	}
 
-	bool can_sleep()
-	{
-		return tx_doorbell_seq_idx == 0;
-	}
+	bool can_sleep() { return tx_doorbell_seq_idx == 0; }
 };
 
+/**
+ * The `RadioStateMachine` class is responsible for transitioning the
+ * wireless transceiver IC into the right state, sending the bytes stored
+ * in the transmit buffer, and writing received bytes to a receive buffer.
+ */
 struct RadioStateMachine {
 	uint16_t first_radio_tx_ticks = 0;
 	bool has_radio_tx = false;
@@ -442,6 +533,25 @@ struct RadioStateMachine {
 
 int main()
 {
+	uint8_t flash_leds = 0;
+	uint8_t seq_no = 0;
+	uint8_t ping_state = 0;
+	uint8_t pong_state = 0;
+	uint16_t flash_leds_ticks = 0;
+
+	bool last_can_sleep = false;
+	uint8_t active_led_phase = 0;
+	uint16_t last_active_led_ticks = 0;
+
+	DebouncedIO btn_onboard_debounce;
+	OnboardButton btn_onboard;
+	DoorbellButton btn_doorbell;
+	DoorbellButtonTxStateMachine doorbell_tx;
+
+	RadioStateMachine radio;
+	Ringbuffer<64> radio_tx_buf;
+	Ringbuffer<64> radio_rx_buf;
+
 	// Reset the watchdog
 	Watchdog::disable();
 	Sleep::init();
@@ -454,6 +564,7 @@ int main()
 
 	Si4463::reset();
 	Si4463::init();
+	UART::print_json_msg("info", "power on reset");
 	if (Si4463::part_number() != 0x4463) {
 		UART::print_json_msg("error", "unknown part");
 		while (true) {}
@@ -469,34 +580,37 @@ int main()
 	Si4463::clear_interrupts();
 	Si4463::clear_fifos();
 
+	// Enable µC interrupts
+	sei();
+
+	// For the first 500ms, and while the button is held, turn both LEDs on;
+	// this is to give a visual indication of the reset happening.
+	Si4463::gpio_pin_cfg(Si4463::GPIOConfig()
+	                         .gpio0(Si4463::GPIOMode::Drive_High)
+	                         .gpio1(Si4463::GPIOMode::Unchanged)
+	                         .gpio2(Si4463::GPIOMode::Unchanged)
+	                         .gpio3(Si4463::GPIOMode::Drive_High));
+	Watchdog::disable();
+	_delay_ms(500);
+	while (!Platform::sample_button_pin()) {
+		_delay_ms(10);
+	};
+	Watchdog::enable();
+	Si4463::gpio_pin_cfg(Si4463::GPIOConfig()
+	                         .gpio0(Si4463::GPIOMode::Drive_Low)
+	                         .gpio1(Si4463::GPIOMode::Unchanged)
+	                         .gpio2(Si4463::GPIOMode::Unchanged)
+	                         .gpio3(Si4463::GPIOMode::Drive_Low));
+	Watchdog::disable();
+	_delay_ms(500);
+	Watchdog::enable();
+
 	// Configure GPIO1 and 2 to drive the T/R switch
 	Si4463::gpio_pin_cfg(Si4463::GPIOConfig()
 	                         .gpio0(Si4463::GPIOMode::Tx_State)
 	                         .gpio1(Si4463::GPIOMode::Rx_State)
 	                         .gpio2(Si4463::GPIOMode::Tx_State)
 	                         .gpio3(Si4463::GPIOMode::Rx_State));
-
-	// Enable µC interrupts
-	sei();
-
-	uint8_t flash_leds = 0;
-	uint16_t button_press_delay = 0;
-	uint16_t button_press_ticks = 0;
-	uint8_t seq_no = 0;
-	uint8_t ping_state = 0;
-	uint8_t pong_state = 0;
-	uint16_t flash_leds_ticks = 0;
-
-	bool last_can_sleep = false;
-	uint8_t active_led_phase = 0;
-	uint16_t last_active_led_ticks = 0;
-
-	DoorbellButton doorbell;
-	DoorbellButtonTxStateMachine doorbell_tx;
-
-	RadioStateMachine radio;
-	Ringbuffer<64> radio_tx_buf;
-	Ringbuffer<64> radio_rx_buf;
 
 	while (true) {
 		// Yes, we are alive!
@@ -505,10 +619,29 @@ int main()
 		// Fetch the current time in ticks (one tick = 100µs)
 		uint16_t cur_ticks = Clock::ticks();
 
+		// Update the onboard button state
+		const bool onboard_btn_debounced = btn_onboard_debounce.update(
+		    cur_ticks, Platform::sample_button_pin());
+		switch (btn_onboard.update(cur_ticks, onboard_btn_debounced)) {
+			case OnboardButton::DoNothing:
+				break;
+			case OnboardButton::SendPing:
+				radio_tx_buf.push("PING ");
+				radio_tx_buf.push(UART::hex_digit((seq_no & 0xF0) >> 4));
+				radio_tx_buf.push(UART::hex_digit((seq_no & 0x0F) >> 0));
+				radio_tx_buf.push("\n\r");
+				seq_no++;
+				break;
+			case OnboardButton::Reset:
+				UART::print_json_msg("info", "pending reset");
+				while (true) {}
+				break;
+		}
+
 		// Update the doorbell state
 		auto button_state =
-		    doorbell.update(cur_ticks, Events::get_and_reset_pulse_event(),
-		                    Platform::sample_pulse_pin());
+		    btn_doorbell.update(cur_ticks, Events::get_and_reset_pulse_event(),
+		                        Platform::sample_pulse_pin());
 		doorbell_tx.update(cur_ticks, button_state, radio_tx_buf);
 
 		auto radio_irq_event = Events::get_and_reset_radio_irq_event();
@@ -516,33 +649,9 @@ int main()
 			UART::print_json_msg("info", "irq event");
 		}
 
-		if (!button_press_delay) {
-			if (cur_ticks - button_press_ticks > 2500) {
-				button_press_delay = 1;
-			}
-		}
-
-		if (!(PIND & (1 << 5)) && button_press_delay) {
-			button_press_delay = 0;
-			button_press_ticks = cur_ticks;
-			ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
-			{
-				radio_tx_buf.push('P');
-				radio_tx_buf.push('I');
-				radio_tx_buf.push('N');
-				radio_tx_buf.push('G');
-				radio_tx_buf.push(' ');
-				radio_tx_buf.push(UART::hex_digit((seq_no & 0xF0) >> 4));
-				radio_tx_buf.push(UART::hex_digit((seq_no & 0x0F) >> 0));
-				radio_tx_buf.push('\n');
-				radio_tx_buf.push('\r');
-			}
-			seq_no++;
-		}
-
 		if (flash_leds > 0) {
 			if (cur_ticks - flash_leds_ticks > 1000) {
-				flash_leds_ticks = cur_ticks;
+				flash_leds_ticks += 1000;
 				flash_leds--;
 
 				if (flash_leds != 0) {
@@ -567,7 +676,7 @@ int main()
 		}
 		else {
 			if ((cur_ticks - last_active_led_ticks) > 1000) {
-				last_active_led_ticks = cur_ticks;
+				last_active_led_ticks += 1000;
 				if (active_led_phase == 10) {
 					active_led_phase = 0;
 					Si4463::gpio_pin_cfg(
@@ -631,7 +740,9 @@ int main()
 			}
 		}
 
-		bool can_sleep = doorbell.can_sleep() && doorbell_tx.can_sleep() &&
+		bool can_sleep = btn_doorbell.can_sleep() &&
+		                 btn_onboard_debounce.can_sleep(cur_ticks) &&
+		                 btn_onboard.can_sleep() && doorbell_tx.can_sleep() &&
 		                 radio.can_sleep() && !flash_leds;
 		ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
 		{

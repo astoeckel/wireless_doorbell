@@ -35,6 +35,10 @@ static inline bool sample_pulse_pin() {
 	return get_bit(PIND, 3);
 }
 
+static inline bool sample_button_pin() {
+	return get_bit(PIND, 5);
+}
+
 static inline void init_gpio() {
 	// Port A: N/A
 
