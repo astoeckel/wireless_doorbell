@@ -4,9 +4,9 @@
 ![Screenshot of the PCB in KiCAD](doc/pcb.png)
 
 > **Warning**  
-> This project is provided as-is and likely not of use to anyone else; at least not without modifications.
+> This project is provided as-is and likely not of use to anyone else; at least not without modifications.  
 > **The author of this repository takes no responsibility for any damage resulting from the electronic devices described here.**
-> **You are responsible to make sure that operating these devices meets all relevant regulatory requirements in your region.**
+> **You are responsible for making sure that operating these devices meets all relevant regulatory requirements in your region.**
 
 This repository contains the PCB and Firmware for a Si4463-based (HopeRF RFM26W) wireless doorbell operating in the 433 MHz ISM band.
 Doorbell button presses are transmitted wirelessly from one PCB to the same PCB serving as a RaspberryPi hat.
@@ -56,8 +56,8 @@ ninja flash  # Requires avrdude with linuxspi when flashing directly from the RP
 
 ## Manual
 
-The firmware automatically chooses whether it acts as the receiver or transceiver depending on the presence of the
-50 Hz pulse from the yellow wire in the above diagram.
+The firmware automatically decides whether it acts as the receiver or transmitter depending on the presence of the 50 Hz pulse from the yellow wire in the above diagram.
+Once a stable series of 50 Hz pulse are received, the device is in `transmitter` mode.
 
 ### Receiver
 
