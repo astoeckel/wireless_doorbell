@@ -30,7 +30,7 @@ Specifically, the AVR can be programmed directly by the Raspberry Pi (no ISP pro
 
 ![Overview of the setup](doc/overview.png)
 
-The above diagram depicts how the PCB is inteded to be used.
+The above diagram depicts how the PCB is intended to be used.
 One instance of the PCB is directly powered by the low-voltage doorbell AC transformer; the other instance is powered by the 5V power supply of a Raspberry Pi.
 
 Button presses are recognized by the doorbell button shorting out the yellow and black wires in the above diagram.
