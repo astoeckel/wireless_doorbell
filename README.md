@@ -23,7 +23,8 @@ The left side of the PCB is a Raspberry Pi compatible AVR Microcontroller HAT (f
 The right side of the PCB is an low-voltage AC power supply with 50 Hz pulse extraction and is designed to be sawed off if not in use.
 
 Since PCB prototyping services often produce at least 5-10 PCBs, the PCB was designed with some versatility in mind.
-Correspondingly, it has far more pin headers as necessary.
+Correspondingly, the left side of the PCB has far more pin headers as necessary, and can be used as a general-purpose ATmega168/328 development board.
+Specifically, the AVR can be programmed directly by the Raspberry Pi (no ISP programmer required) and can communicate via UART (the schematic suggests the use of a 14.7456 MHz crystal for stable high-speed communication).
 
 ## Overview
 
