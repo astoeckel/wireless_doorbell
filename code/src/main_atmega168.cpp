@@ -193,8 +193,8 @@ struct DoorbellButton {
 		Depressed,
 	};
 
-	static constexpr uint16_t MIN_DELTA = 156;      // 1 / 60 Hz - 1ms
-	static constexpr uint16_t MAX_DELTA = 210;      // 1 / 50 Hz + 1ms
+	static constexpr uint16_t MIN_DELTA = 126;      // 1 / 60 Hz - 4ms
+	static constexpr uint16_t MAX_DELTA = 240;      // 1 / 50 Hz + 4ms
 	static constexpr uint16_t DEPRESS_DELAY = 800;  // 80 ms (4 cycles @ 50 Hz)
 	static constexpr uint8_t AC_CARRIER_SYNC = 5;   // 5 cycles to synchronise
 
@@ -252,7 +252,7 @@ struct DebouncedIO {
 	 */
 	static constexpr uint16_t DEBOUNCE_TICKS = 500;  // 50ms
 
-	bool cur_state = false;
+	bool cur_state = true;
 	bool last_raw_in = false;
 	uint16_t last_edge_ticks = 0;
 
@@ -280,13 +280,13 @@ struct OnboardButton {
 	 * Number of seconds the button has to be pushed down for the board to
 	 * reset.
 	 */
-	static constexpr uint8_t RESET_DUR_SEC = 5;  // 5s
+	static constexpr uint8_t RESET_DUR_SEC = 3;  // 3s
 
 	/**
 	 * Number of seconds for which pressing the button forces non-power-save
 	 * mode.
 	 */
-	static constexpr uint8_t NO_SLEEP_DUR_SEC = 5;  // 5s
+	static constexpr uint8_t NO_SLEEP_DUR_SEC = 60;  // 60s
 
 	enum Action {
 		DoNothing,
@@ -339,8 +339,8 @@ struct OnboardButton {
 };
 
 struct DoorbellButtonTxStateMachine {
-	static constexpr uint8_t FORCE_IVAL_SEC = 60;
-	static constexpr uint8_t FORCE_IVAL_SEC_UNKNOWN = 5;
+	static constexpr uint8_t FORCE_IVAL_SEC = 120;
+	static constexpr uint8_t FORCE_IVAL_SEC_UNKNOWN = 10;
 	static constexpr uint16_t REPEAT = 5;
 	static constexpr uint16_t IVAL_MS = 500;  // 50 ms
 
@@ -404,7 +404,7 @@ struct DoorbellButtonTxStateMachine {
 			              (tx_doorbell_forced);
 			if (is_on || is_off) {
 				uint8_t seq = (is_on ? 2 : 1) * REPEAT - tx_doorbell_seq_idx;
-				radio_tx_buf.push("DBL,");
+				radio_tx_buf.push("$DBL,");
 				if (is_on) {
 					radio_tx_buf.push('1');
 				}
@@ -531,26 +531,158 @@ struct RadioStateMachine {
 	bool can_sleep() { return !has_radio_tx && (known_state == target_state); }
 };
 
+struct LEDStateMachine {
+	enum State {
+		Off,
+		On,
+		BlinkSlowlyOn,
+		BlinkSlowlyOff,
+		BlinkQuickly,
+	};
+
+	uint16_t last_led_ticks = 0;
+	State event_state = State::Off;
+	State base_state = State::Off;
+	uint8_t led_phase = 0;
+	uint8_t event_len = 0;
+	bool is_on = false;
+
+	bool update(uint16_t cur_ticks)
+	{
+		if (cur_ticks - last_led_ticks > 1000) {
+			last_led_ticks += 1000;
+			led_phase++;
+			if (led_phase == 10) {
+				led_phase = 0;
+			}
+			if (event_len > 0) {
+				event_len--;
+			}
+			State state = event_len ? event_state : base_state;
+			switch (state) {
+				case State::Off:
+					is_on = false;
+					break;
+				case State::On:
+					is_on = true;
+					break;
+				case State::BlinkSlowlyOff:
+					is_on = (led_phase == 9);
+					break;
+				case State::BlinkSlowlyOn:
+					is_on = (led_phase != 9);
+					break;
+				case State::BlinkQuickly:
+					is_on = (led_phase & 1) == 0;
+					break;
+			}
+		}
+		return is_on;
+	}
+
+	void set_state(State new_state, uint8_t new_event_len = 0)
+	{
+		if (new_event_len) {
+			if ((new_event_len > event_len) || (new_state != event_state)) {
+				event_state = new_state;
+				event_len = new_event_len;
+			}
+		}
+		else {
+			base_state = new_state;
+		}
+	}
+
+	bool can_sleep() { return event_len == 0; }
+};
+
+struct RadioLEDStateMachine {
+	LEDStateMachine left_led;
+	LEDStateMachine right_led;
+	bool last_left_on = false;
+	bool last_right_on = false;
+
+	void update(uint16_t cur_ticks)
+	{
+		bool left_on = left_led.update(cur_ticks);
+		bool right_on = right_led.update(cur_ticks);
+		if ((left_on != last_left_on) || (right_on != last_right_on)) {
+			last_left_on = left_on;
+			last_right_on = right_on;
+			auto gpio0 = right_on ? Si4463::GPIOMode::Drive_High
+			                      : Si4463::GPIOMode::Drive_Low;
+			auto gpio3 = left_on ? Si4463::GPIOMode::Drive_High
+			                     : Si4463::GPIOMode::Drive_Low;
+			Si4463::gpio_pin_cfg(Si4463::GPIOConfig()
+			                         .gpio0(gpio0)
+			                         .gpio1(Si4463::GPIOMode::Unchanged)
+			                         .gpio2(Si4463::GPIOMode::Unchanged)
+			                         .gpio3(gpio3));
+		}
+	}
+
+	bool can_sleep() { return left_led.can_sleep() && right_led.can_sleep(); }
+
+	void update_blink_pattern(bool has_tx_data, bool has_rx_data,
+	                          bool last_can_sleep, bool synced, bool in_rx)
+	{
+		if (has_tx_data) {
+			right_led.set_state(LEDStateMachine::BlinkQuickly, 10);
+		}
+		if (has_rx_data) {
+			left_led.set_state(LEDStateMachine::BlinkQuickly, 10);
+		}
+		if (in_rx) {
+			if (synced) {
+				left_led.set_state(LEDStateMachine::BlinkSlowlyOn);
+			}
+			else {
+				left_led.set_state(LEDStateMachine::On);
+			}
+		}
+		else {
+			if (last_can_sleep) {
+				left_led.set_state(LEDStateMachine::BlinkSlowlyOff);
+			}
+			else {
+				left_led.set_state(LEDStateMachine::Off);
+			}
+		}
+	}
+};
+
+static bool is_valid_char(uint8_t c)
+{
+	return ((c >= 'A') && (c <= 'Z')) || (c == ',') || (c == '?') ||
+	       ((c >= '0') && (c <= '9'));
+}
+
+static bool strcmp(const char *s1, const char *s2)
+{
+	do {
+		if (*(s1++) != *(s2++)) {
+			return false;
+		}
+	} while (*s1 && *s2);
+	return *s1 == *s2;
+}
+
 int main()
 {
-	uint8_t flash_leds = 0;
-	uint8_t seq_no = 0;
-	uint8_t ping_state = 0;
-	uint8_t pong_state = 0;
-	uint16_t flash_leds_ticks = 0;
-
 	bool last_can_sleep = false;
-	uint8_t active_led_phase = 0;
-	uint16_t last_active_led_ticks = 0;
 
 	DebouncedIO btn_onboard_debounce;
 	OnboardButton btn_onboard;
 	DoorbellButton btn_doorbell;
 	DoorbellButtonTxStateMachine doorbell_tx;
+	RadioLEDStateMachine radio_leds;
+
+	char pkt_msg[16];
+	uint8_t pkt_ptr = 0;
 
 	RadioStateMachine radio;
-	Ringbuffer<64> radio_tx_buf;
-	Ringbuffer<64> radio_rx_buf;
+	Ringbuffer<32> radio_tx_buf;
+	Ringbuffer<32> radio_rx_buf;
 
 	// Reset the watchdog
 	Watchdog::disable();
@@ -580,9 +712,6 @@ int main()
 	Si4463::clear_interrupts();
 	Si4463::clear_fifos();
 
-	// Enable µC interrupts
-	sei();
-
 	// For the first 500ms, and while the button is held, turn both LEDs on;
 	// this is to give a visual indication of the reset happening.
 	Si4463::gpio_pin_cfg(Si4463::GPIOConfig()
@@ -605,12 +734,15 @@ int main()
 	_delay_ms(500);
 	Watchdog::enable();
 
-	// Configure GPIO1 and 2 to drive the T/R switch
+	// Configure GPIO1 and GPIO2 to drive the Tx/Rx switch
 	Si4463::gpio_pin_cfg(Si4463::GPIOConfig()
-	                         .gpio0(Si4463::GPIOMode::Tx_State)
+	                         .gpio0(Si4463::GPIOMode::Unchanged)
 	                         .gpio1(Si4463::GPIOMode::Rx_State)
 	                         .gpio2(Si4463::GPIOMode::Tx_State)
-	                         .gpio3(Si4463::GPIOMode::Rx_State));
+	                         .gpio3(Si4463::GPIOMode::Unchanged));
+
+	// Enable µC interrupts
+	sei();
 
 	while (true) {
 		// Yes, we are alive!
@@ -626,11 +758,7 @@ int main()
 			case OnboardButton::DoNothing:
 				break;
 			case OnboardButton::SendPing:
-				radio_tx_buf.push("PING ");
-				radio_tx_buf.push(UART::hex_digit((seq_no & 0xF0) >> 4));
-				radio_tx_buf.push(UART::hex_digit((seq_no & 0x0F) >> 0));
-				radio_tx_buf.push("\n\r");
-				seq_no++;
+				radio_tx_buf.push("$PING\n\r");
 				break;
 			case OnboardButton::Reset:
 				UART::print_json_msg("info", "pending reset");
@@ -644,106 +772,56 @@ int main()
 		                        Platform::sample_pulse_pin());
 		doorbell_tx.update(cur_ticks, button_state, radio_tx_buf);
 
-		auto radio_irq_event = Events::get_and_reset_radio_irq_event();
-		if (radio_irq_event) {
-			UART::print_json_msg("info", "irq event");
-		}
-
-		if (flash_leds > 0) {
-			if (cur_ticks - flash_leds_ticks > 1000) {
-				flash_leds_ticks += 1000;
-				flash_leds--;
-
-				if (flash_leds != 0) {
-					Si4463::GPIOMode mode = (flash_leds & 1)
-					                            ? Si4463::GPIOMode::Drive_High
-					                            : Si4463::GPIOMode::Drive_Low;
-					Si4463::gpio_pin_cfg(Si4463::GPIOConfig()
-					                         .gpio0(mode)
-					                         .gpio1(Si4463::GPIOMode::Unchanged)
-					                         .gpio2(Si4463::GPIOMode::Unchanged)
-					                         .gpio3(mode));
-				}
-				else {
-					Si4463::gpio_pin_cfg(
-					    Si4463::GPIOConfig()
-					        .gpio0(Si4463::GPIOMode::Tx_State)
-					        .gpio1(Si4463::GPIOMode::Unchanged)
-					        .gpio2(Si4463::GPIOMode::Unchanged)
-					        .gpio3(Si4463::GPIOMode::Rx_State));
-				}
-			}
-		}
-		else {
-			if ((cur_ticks - last_active_led_ticks) > 1000) {
-				last_active_led_ticks += 1000;
-				if (active_led_phase == 10) {
-					active_led_phase = 0;
-					Si4463::gpio_pin_cfg(
-					    Si4463::GPIOConfig()
-					        .gpio0(Si4463::GPIOMode::Unchanged)
-					        .gpio1(Si4463::GPIOMode::Unchanged)
-					        .gpio2(Si4463::GPIOMode::Unchanged)
-					        .gpio3(Si4463::GPIOMode::Drive_High));
-				}
-				else if (active_led_phase == 1) {
-					Si4463::gpio_pin_cfg(
-					    Si4463::GPIOConfig()
-					        .gpio0(Si4463::GPIOMode::Unchanged)
-					        .gpio1(Si4463::GPIOMode::Unchanged)
-					        .gpio2(Si4463::GPIOMode::Unchanged)
-					        .gpio3(Si4463::GPIOMode::Rx_State));
-				}
-				active_led_phase++;
-			}
-		}
-
-		// Send/receive data
+		// Send/receive data and update the LEDs
+		bool has_tx_data = radio_tx_buf.level() > 0;
 		radio.update(cur_ticks, radio_rx_buf, radio_tx_buf, last_can_sleep);
+		bool has_rx_data = radio_rx_buf.level() > 0;
+		bool in_rx = radio.known_state == Si4463::State::Rx;
+		bool synced = button_state != DoorbellButton::Unknown;
+		radio_leds.update_blink_pattern(has_tx_data, has_rx_data,
+		                                last_can_sleep, synced, in_rx);
+		radio_leds.update(cur_ticks);
 
+		// Parse the buffer data into a message
 		while (radio_rx_buf.level()) {
 			uint8_t buf = radio_rx_buf.pop();
-			UART::putc(buf);
-			const char *cmp_ping = "PING ";
-			const char *cmp_pong = "PONG ";
-			if (buf == '\r' || buf == '\n') {
-				if (ping_state >= 5) {
-					radio_tx_buf.push('\n');
-					radio_tx_buf.push('\r');
+			if (buf == '$') {
+				pkt_ptr = 0;
+				pkt_msg[pkt_ptr++] = buf;
+			}
+			else if (pkt_ptr < sizeof(pkt_msg)) {
+				if (buf == '\r' || buf == '\n') {
+					pkt_msg[pkt_ptr] = 0;
+					if (pkt_msg[0] == '$') {
+						btn_onboard.no_sleep_secs =
+							btn_onboard.NO_SLEEP_DUR_SEC;
+						if (strcmp(pkt_msg, "$PING")) {
+							radio_tx_buf.push("$PONG\n\r");
+						}
+						else if (strcmp(pkt_msg, "$PONG")) {
+							radio_leds.left_led.set_state(
+							    LEDStateMachine::BlinkQuickly, 20);
+							radio_leds.right_led.set_state(
+							    LEDStateMachine::BlinkQuickly, 20);
+						}
+						UART::print_json_msg("radio", pkt_msg);
+					}
+					pkt_ptr = 0;
 				}
-				ping_state = 0;
-			}
-			else if (ping_state < 5 && buf == cmp_ping[ping_state]) {
-				ping_state++;
-			}
-			else if (ping_state >= 5) {
-				if (ping_state == 5) {
-					radio_tx_buf.push('P');
-					radio_tx_buf.push('O');
-					radio_tx_buf.push('N');
-					radio_tx_buf.push('G');
-					radio_tx_buf.push(' ');
+				else if (is_valid_char(buf)) {
+					pkt_msg[pkt_ptr++] = buf;
 				}
-				radio_tx_buf.push(buf);
-				ping_state++;
-			}
-
-			if (buf == '\r' || buf == '\n') {
-				if (pong_state >= 5) {
-					flash_leds = 10;
-					flash_leds_ticks = cur_ticks;
+				else {
+					pkt_ptr = 0;
 				}
-				pong_state = 0;
-			}
-			else if (pong_state < 5 && buf == cmp_pong[pong_state]) {
-				pong_state++;
 			}
 		}
 
+		// Handle entering sleep mode
 		bool can_sleep = btn_doorbell.can_sleep() &&
 		                 btn_onboard_debounce.can_sleep(cur_ticks) &&
 		                 btn_onboard.can_sleep() && doorbell_tx.can_sleep() &&
-		                 radio.can_sleep() && !flash_leds;
+		                 radio.can_sleep() && radio_leds.can_sleep();
 		ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
 		{
 			if (!can_sleep && last_can_sleep) {
