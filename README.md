@@ -62,7 +62,7 @@ ninja
 ninja flash  # Requires avrdude with linuxspi when flashing directly from the RPi
 ```
 
-## Manual
+## Usage
 
 The firmware automatically decides whether it acts as the receiver or transmitter depending on the presence of the 50 Hz pulse from the yellow wire in the above diagram.
 Once a stable series of 50 Hz pulse are received, the device is in “transmitter” mode.
