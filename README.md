@@ -12,7 +12,7 @@
 > **The author of this repository takes no responsibility for any damage resulting from using the electronic devices described here.**
 > **You are responsible for making sure that operating these devices meets all relevant regulatory requirements in your region.**
 
-This repository contains the PCB and Firmware for a Si4463-based (on a HopeRF RFM26W module) wireless doorbell operating on the 433 MHz ISM band.
+This repository contains the PCB and firmware for a Si4463-based (on a HopeRF RFM26W module) wireless doorbell operating on the 433 MHz ISM band.
 The Si4463 is controlled using an ATmega168 µC (the project requires about 6kiB of flash memory).
 
 Doorbell button presses are transmitted wirelessly between two of these PCBs.
